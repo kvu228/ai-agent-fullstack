@@ -1,0 +1,102 @@
+# Local infrastructure. Mirrors the production cloud services:
+#   postgres -> AWS RDS for PostgreSQL
+#   floci    -> AWS S3 (Floci is a free, local AWS emulator)
+#   chroma   -> ChromaDB vector store (self-hosted or Chroma Cloud)
+#
+#   docker compose up -d          # infrastructure only (run backend/frontend with make)
+#   docker compose --profile app up -d --build   # + migrations, backend & frontend containers
+
+name: ai-agent-fullstack
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      - "5433:5432" # 5433 on the host to avoid clashing with a local Postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  floci:
+    image: floci/floci:2.3.0
+    environment:
+      FLOCI_STORAGE_MODE: persistent
+    ports:
+      - "4566:4566"
+    volumes:
+      - floci-data:/app/data
+    healthcheck:
+      # The image has no curl/wget: open a TCP connection with bash instead.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4566"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  chroma:
+    image: chromadb/chroma:1.5.9
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "8001:8000" # backend uses 8000 on the host
+    volumes:
+      - chroma-data:/data
+
+  # One-shot job: apply database migrations, then exit. The backend waits for it.
+  # (In production this is a separate deploy step, never done by every app replica.)
+  migrate:
+    profiles: ["app"]
+    build: ./backend
+    command: ["alembic", "upgrade", "head"]
+    environment: &backend-env
+      # Inside the compose network, services are reached by their service name.
+      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/app
+      S3_ENDPOINT_URL: http://floci:4566
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:4566 # presigned URLs are opened by the browser
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    profiles: ["app"]
+    build: ./backend
+    env_file:
+      - path: ./backend/.env # API keys etc.; optional
+        required: false
+    environment: *backend-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      floci:
+        condition: service_healthy
+      chroma:
+        condition: service_started
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  floci-data:
+  chroma-data:
