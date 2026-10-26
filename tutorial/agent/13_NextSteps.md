@@ -76,7 +76,7 @@ nhưng **không** export ra `os.environ`, nên chỉ thêm vào `.env` của bac
 
 | Kỹ thuật | Vấn đề giải quyết | Sửa ở đâu |
 |---|---|---|
-| **Reranking** (Cohere Rerank, cross-encoder) | Top-k theo vector chưa chắc là đoạn tốt nhất | Lấy `k=20` từ Chroma, rerank còn 4 trong `DocumentVectorStore.search` |
+| **Reranking** (Cohere Rerank, cross-encoder) | Top-k theo vector chưa chắc là đoạn tốt nhất | Lấy `k=20` từ Chroma, rerank còn 4 trong `DocumentVectorStore.search` (mục [4.1](#41-reranking-chi-tiết)) |
 | **Hybrid search** (BM25 + vector) | Từ khoá chính xác (mã lỗi, tên riêng) mà embedding bỏ lỡ | Thêm index từ khoá, gộp điểm bằng Reciprocal Rank Fusion |
 | **Query rewriting** | Câu hỏi nối tiếp "còn dự án kia thì sao?" thiếu ngữ cảnh | Agent đã tự viết query; có thể thêm node rewrite trước `agent` |
 | **Ngưỡng similarity** | Đoạn "gần nhất" vẫn không liên quan | Lọc theo điểm trong tool, trả "No relevant passages" |
@@ -84,6 +84,125 @@ nhưng **không** export ra `os.environ`, nên chỉ thêm vào `.env` của bac
 
 Thêm node dùng LLM (rewrite, chấm điểm) → nhớ token của nó cũng vào mode `messages`; filter
 `langgraph_node` hiện tại đã chặn đúng.
+
+### 4.1 Reranking chi tiết
+
+#### Vì sao top-k theo vector chưa đủ tốt?
+
+Embedding search (bài [04](04_EmbeddingsAndVectorStore.md)) dùng **bi-encoder**: câu hỏi và chunk được
+mã hoá **riêng rẽ** thành vector, rồi mới so khoảng cách. Vector của chunk tính sẵn lúc ingest nên search
+rất nhanh, nhưng model **không bao giờ nhìn câu hỏi và chunk cùng lúc**. Mọi ý nghĩa của một chunk bị nén
+vào một vector duy nhất, nên thứ hạng chỉ ở mức "đại khái đúng chủ đề".
+
+**Reranker** (thường là **cross-encoder**) nhận **cặp `(câu hỏi, chunk)`** làm một input và trả về một
+điểm liên quan. Nó đọc cả hai cùng lúc, nên phân biệt được "chunk nói *về* Atlas" với "chunk *trả lời*
+khi nào Atlas ra mắt".
+
+| | Bi-encoder (embedding) | Cross-encoder (reranker) |
+|---|---|---|
+| Input | Từng văn bản riêng | Cặp (câu hỏi, chunk) |
+| Tính trước được? | ✅ Vector chunk lưu sẵn trong Chroma | ❌ Phải chạy lại cho mỗi câu hỏi |
+| Tốc độ | Rất nhanh, search hàng triệu chunk | Chậm, chỉ chấm được vài chục chunk |
+| Độ chính xác thứ hạng | Khá | Tốt hơn rõ rệt |
+
+Vì vậy hai loại được ghép thành **tìm kiếm hai tầng**: tầng rẻ lấy nhiều ứng viên (recall cao), tầng
+đắt chọn ra vài đoạn tốt nhất (precision cao).
+
+```mermaid
+flowchart LR
+    Q[query] --> C["Chroma<br/>filter user_id<br/>k = 20"]
+    C -->|20 ứng viên| R["Reranker<br/>chấm từng cặp<br/>(query, chunk)"]
+    R -->|top 5| T[search_documents<br/>→ LLM]
+```
+
+#### Các lựa chọn reranker
+
+| Cách | Ví dụ | Ưu | Nhược |
+|---|---|---|---|
+| **Rerank API** | Cohere Rerank, Voyage, Jina | Tích hợp vài dòng, chất lượng tốt, đa ngôn ngữ | Tốn phí theo request, phụ thuộc mạng, gửi nội dung tài liệu ra ngoài |
+| **Cross-encoder local** | `BAAI/bge-reranker-*`, `cross-encoder/ms-marco-*` (sentence-transformers) | Miễn phí, dữ liệu không rời server | Cần `torch` → image Docker nặng; chậm nếu không có GPU |
+| **LLM làm reranker** | Prompt LLM chấm điểm / xếp hạng các passage | Linh hoạt, hiểu yêu cầu phức tạp | Chậm và tốn token nhất |
+
+LangChain có sẵn `ContextualCompressionRetriever` cùng các compressor như `CohereRerank`. Project này
+không dùng retriever của LangChain mà đi qua `DocumentVectorStore`, nên gọi reranker ngay trong `search`
+là gọn nhất.
+
+#### Gắn vào project
+
+Giữ tinh thần của `DocumentVectorStore`: tool và agent **không cần biết** có rerank hay không. Chỉ
+`search` thay đổi.
+
+```python
+class Reranker(Protocol):
+    async def rerank(
+        self, query: str, docs: list[LCDocument], top_n: int
+    ) -> list[tuple[LCDocument, float]]: ...
+
+
+class CrossEncoderReranker:
+    def __init__(self, model_name: str) -> None:
+        from sentence_transformers import CrossEncoder
+
+        self._model = CrossEncoder(model_name)
+
+    async def rerank(
+        self, query: str, docs: list[LCDocument], top_n: int
+    ) -> list[tuple[LCDocument, float]]:
+        pairs = [(query, doc.page_content) for doc in docs]
+        # Model inference is CPU-bound: keep it off the event loop.
+        scores = await asyncio.to_thread(self._model.predict, pairs)
+        ranked = sorted(zip(docs, scores, strict=True), key=lambda pair: pair[1], reverse=True)
+        return [(doc, float(score)) for doc, score in ranked[:top_n]]
+```
+
+```python
+class DocumentVectorStore:
+    def __init__(self, ..., reranker: Reranker | None = None, candidate_k: int = 20) -> None:
+        ...
+        self._reranker = reranker
+        self._candidate_k = candidate_k
+
+    async def search(
+        self, query: str, user_id: uuid.UUID, k: int
+    ) -> list[tuple[LCDocument, float]]:
+        # With a reranker, fetch more candidates than needed and let it pick the best k.
+        fetch_k = max(k, self._candidate_k) if self._reranker else k
+        results = await self._store.asimilarity_search_with_score(
+            query, k=fetch_k, filter={"user_id": str(user_id)}
+        )
+        if self._reranker is None:
+            return [(doc, 1.0 - distance) for doc, distance in results]
+        # Candidates are already filtered by user_id: the reranker never sees other users' chunks.
+        return await self._reranker.rerank(query, [doc for doc, _ in results], top_n=k)
+```
+
+Những chỗ khác cần sửa theo:
+
+- **`config.py`**: thêm `rerank_model: str | None = None` và `rerank_candidate_k: int = 20`. Để `None`
+  thì tắt rerank, giữ hành vi cũ.
+- **Lifespan (`main.py`)**: tạo reranker **một lần** (load model mất vài giây và tốn RAM), truyền vào
+  `DocumentVectorStore`.
+- **`tests/conftest.py`**: lifespan không chạy trong test, nên phải truyền reranker giả ở đây. Ví dụ
+  `FakeReranker` đảo ngược thứ tự ứng viên: test kiểm tra kết quả theo đúng thứ tự reranker trả về và có
+  đúng `k` phần tử, không cần tải model thật.
+- **`tools.py`**: nhãn `(similarity 0.82)` không còn đúng, vì điểm giờ là **điểm của reranker**, thang
+  đo khác (tuỳ model: 0–1 hoặc logit không giới hạn). Đổi thành `(relevance …)`, và nếu có ngưỡng lọc
+  thì phải chọn lại ngưỡng.
+
+Với Cohere thì không cần `torch`: `CohereRerank(model=..., top_n=k)` từ `langchain-cohere`, gọi
+`await reranker.acompress_documents(docs, query)`, điểm nằm ở `doc.metadata["relevance_score"]`. Bọc nó
+trong một class có cùng method `rerank` như trên là thay được cho nhau.
+
+#### Chọn `candidate_k`
+
+| `candidate_k` | Hệ quả |
+|---|---|
+| Quá nhỏ (≈ `k`) | Reranker chỉ sắp xếp lại đúng những gì vector search đã chọn, gần như vô ích |
+| 20–50 | Mức thường dùng: đủ rộng để "cứu" đoạn đúng bị xếp hạng thấp, vẫn đủ nhanh |
+| Hàng trăm | Độ trễ tăng tuyến tính, và agent ReAct có thể gọi tool **nhiều lần** mỗi câu hỏi |
+
+Đo trước khi chọn: với bộ câu hỏi eval (mục 3), so **recall@k** (đoạn đúng có nằm trong top-k không)
+khi tắt và bật rerank, cùng độ trễ của tool trong LangSmith.
 
 ## 5. Ingestion cho production
 
@@ -126,12 +245,19 @@ Thêm node dùng LLM (rewrite, chấm điểm) → nhớ token của nó cũng v
   tra chính sách dữ liệu, hoặc ẩn input/output (`LANGSMITH_HIDE_INPUTS`).
 - **Bỏ filter `user_id` khi thêm đường search mới** (BM25, reranker…) → rò dữ liệu giữa user. Copy test
   `test_search_never_returns_other_users_documents` cho mọi đường mới.
+- **Load model reranker trong mỗi request** thay vì một lần trong lifespan → mỗi lần search chậm vài giây.
+- **Gọi `CrossEncoder.predict` trực tiếp trong code async** → chặn event loop, mọi stream khác bị đứng.
+  Bọc bằng `asyncio.to_thread`.
+- **So điểm reranker với ngưỡng cosine cũ** → thang đo khác nhau, ngưỡng mất ý nghĩa.
 
 ## 🧪 Thực hành
 
 1. Tạo 10 câu hỏi + đáp án từ một tài liệu của bạn, chạy qua `scripts/run_agent.py` với LangSmith bật, ghi lại câu sai.
 2. Thêm ngưỡng similarity vào tool, viết test với fake embedding (truy vấn đúng nguyên văn chunk → similarity cao nhất).
 3. Thêm `trim_messages` vào `AgentNode` (giữ ~4000 token cuối) và test rằng checkpoint vẫn đủ message.
+4. Thêm `Reranker` vào `DocumentVectorStore` theo mục 4.1, với `FakeReranker` trong `conftest.py`. Chạy
+   lại `test_search_never_returns_other_users_documents` để chắc rerank không làm rò dữ liệu, rồi so
+   recall@k trên bộ câu hỏi ở bài tập 1 khi tắt / bật rerank.
 
 ---
 

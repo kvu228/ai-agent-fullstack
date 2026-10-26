@@ -6,7 +6,7 @@
 - Biết cách kết nối ChromaDB qua `HttpClient` và bọc `langchain_chroma.Chroma` sau một interface riêng.
 - Hiểu **id tất định** `{document_id}:{i}` và lợi ích khi ingest lại / xoá.
 - Hiểu **multi-tenancy bằng metadata filter** `user_id` — quy tắc bảo mật quan trọng nhất của RAG nhiều người dùng.
-- Đổi **cosine distance** thành **similarity** dễ đọc.
+- So sánh **cosine / dot product / L2**, biết khi nào dùng metric nào, và đổi **distance** thành **similarity** dễ đọc.
 
 ## 📁 File liên quan
 
@@ -132,16 +132,82 @@ hỏi về tài liệu của Alice → tool trả "No relevant passages".
 
 ## 6. Distance → similarity
 
-Collection dùng `hnsw:space = cosine`. Chroma trả **cosine distance** = `1 - cosine_similarity`
-(0 = giống hệt, càng lớn càng khác). Đổi thành similarity (`1 - distance`, 1 = giống hệt) để người (và LLM)
-đọc dễ hơn: `(similarity 0.82)` trong output của tool.
+### 6.1 Ba cách đo "gần nhau" trong Chroma
+
+Vector store xếp hạng chunk theo **khoảng cách** giữa vector câu hỏi `q` và vector chunk `d`. Chroma
+hỗ trợ ba metric, chọn bằng `hnsw:space` **lúc tạo collection**:
+
+| Metric (`hnsw:space`) | Công thức gốc | Chroma trả về (distance) | Khoảng giá trị | Đo cái gì |
+|---|---|---|---|---|
+| `cosine` (project dùng) | `cos(q, d) = q·d / (‖q‖·‖d‖)` | `1 − cos(q, d)` | 0 → 2 | **Góc** giữa hai vector (hướng), bỏ qua độ dài |
+| `ip` (inner / dot product) | `q·d = Σ qᵢ·dᵢ` | `1 − q·d` | không giới hạn, có thể âm | Hướng **và** độ dài |
+| `l2` (mặc định của Chroma) | `‖q − d‖ = √Σ(qᵢ − dᵢ)²` | `Σ(qᵢ − dᵢ)²` (bình phương, không lấy căn) | 0 → ∞ | **Khoảng cách Euclid** giữa hai điểm |
+
+Với cả ba: distance **càng nhỏ càng giống**. Nhưng con số của mỗi metric có thang đo riêng, không so
+được với nhau (`0.4` của cosine khác hẳn `0.4` của l2).
+
+### 6.2 Ví dụ: khi nào các metric cho kết quả khác nhau
+
+Vector 2 chiều cho dễ hình dung: câu hỏi `q = (1, 0)` và hai chunk:
+
+- `a = (0.8, 0.6)`: lệch hướng một chút, độ dài 1 (giống `q`)
+- `b = (3, 0)`: **cùng hướng** với `q`, nhưng dài gấp 3
+
+| | cosine distance | ip distance | l2 distance |
+|---|---|---|---|
+| `q` ↔ `a` | 1 − 0.8 = **0.2** | 1 − 0.8 = **0.2** | 0.2² + 0.6² = **0.4** |
+| `q` ↔ `b` | 1 − 1 = **0** | 1 − 3 = **−2** | 2² + 0² = **4** |
+| Gần nhất | `b` | `b` | `a` |
+
+- **cosine**: `b` giống hệt `q` vì cùng hướng, độ dài không quan trọng.
+- **dot product**: `b` càng được ưu tiên hơn vì dài. Vector dài "thắng" dù hướng chỉ tương đương.
+- **L2**: `a` gần hơn, vì `b` nằm xa trong không gian dù cùng hướng.
+
+### 6.3 Vector đã chuẩn hoá: ba metric cho cùng thứ hạng
+
+Nếu mọi vector có độ dài 1 (`‖q‖ = ‖d‖ = 1`) thì:
+
+- `q·d = cos(q, d)` (mẫu số bằng 1)
+- `‖q − d‖² = 2 − 2·cos(q, d)`
+
+Cả ba đều là hàm đơn điệu của cosine → **top-k giống hệt nhau**, chỉ khác con số. OpenAI
+`text-embedding-3-small` (model mặc định của project) trả vector đã chuẩn hoá, nên ở đây chọn metric nào
+cũng ra cùng kết quả. Chọn `cosine` vì nó vẫn đúng nếu sau này đổi sang model **không** chuẩn hoá.
+
+### 6.4 Khi nào dùng metric nào
+
+| Metric | Dùng khi | Ví dụ |
+|---|---|---|
+| **cosine** | Mặc định cho text embedding; không chắc model có chuẩn hoá không; độ dài vector không mang ý nghĩa | RAG, semantic search (project này) |
+| **dot product** | Vector đã chuẩn hoá (kết quả như cosine nhưng tính nhanh hơn vì bỏ bước chia độ dài); hoặc model được train cho dot product, nơi độ dài mang thông tin | Model card ghi "use dot product"; hệ gợi ý mà độ dài vector phản ánh độ phổ biến |
+| **L2** | Vị trí tuyệt đối trong không gian có ý nghĩa; đặc trưng số, ảnh; các thuật toán dựa trên Euclid | Tìm ảnh tương tự, clustering (k-means), phát hiện bất thường |
+
+Quy tắc thực tế: **dùng metric mà model được train cùng** (xem model card). Không rõ thì chọn cosine.
+
+> Ngoài ba metric trên còn có Manhattan (L1), Hamming (cho vector nhị phân, dùng với binary
+> quantization), Jaccard (cho tập hợp). Chroma không hỗ trợ; các vector DB khác như Qdrant, Milvus,
+> Faiss có hỗ trợ một số trong đó.
+
+### 6.5 Đổi distance thành similarity
+
+Collection dùng `hnsw:space = cosine`, nên Chroma trả **cosine distance** = `1 − cosine_similarity`
+(0 = giống hệt, càng lớn càng khác). `search` đổi thành similarity (`1 − distance`, 1 = giống hệt) để người
+(và LLM) đọc dễ hơn: `(similarity 0.82)` trong output của tool.
+
+Công thức đổi **phụ thuộc metric**. `1.0 - distance` chỉ đúng với cosine:
+
+| Metric | Similarity từ distance Chroma trả về |
+|---|---|
+| `cosine` | `1 − distance` → cosine similarity, từ −1 đến 1 |
+| `ip` | `1 − distance` → dot product, không giới hạn |
+| `l2` | Không có thang tự nhiên. Chỉ khi vector đã chuẩn hoá: `1 − distance / 2` = cosine similarity |
 
 > Với fake embedding trong test (vector ngẫu nhiên tất định), similarity có thể âm — bình thường, vì
 > fake không mang nghĩa. Với embedding thật, đoạn liên quan thường > 0.3–0.5 (tuỳ model).
 
 ## ⚠️ Lỗi thường gặp
 
-- **Tạo collection với metric khác lần trước** → `hnsw:space` chỉ có hiệu lực khi collection *được tạo*. Đổi metric phải xoá collection cũ.
+- **Tạo collection với metric khác lần trước** → `hnsw:space` chỉ có hiệu lực khi collection *được tạo*. Đổi metric phải xoá collection cũ, **và** sửa công thức đổi distance → similarity trong `search` (mục 6.5).
 - **Đổi embedding model mà không xoá collection** → số chiều không khớp, Chroma báo lỗi khi add/query.
 - **Gọi `similarity_search` (sync) trong async code** → chặn event loop. Dùng bản `a*`.
 - **Filter bằng UUID object** thay vì `str(user_id)` → không khớp metadata đã lưu dạng chuỗi → luôn rỗng.
