@@ -29,7 +29,7 @@ def build_agent_graph(
     # `context_schema` declares what every run must receive via `context=...`.
     builder = StateGraph(AgentState, context_schema=AgentContext)
     builder.add_node(AGENT_NODE, AgentNode(model, tools))
-    builder.add_node(TOOLS_NODE, ToolNode(list(tools)))
+    builder.add_node(TOOLS_NODE, ToolNode(list(tools), handle_tool_errors=True))
 
     builder.add_edge(START, AGENT_NODE)
     # `tools_condition` routes to "tools" if the last AI message has tool_calls, else END.
