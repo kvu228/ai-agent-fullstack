@@ -24,9 +24,11 @@ def get_chat_model(settings: Settings) -> BaseChatModel:
 
     Swapping provider is a config change, not a code change.
     """
+    provider = settings.llm_model.split(":", 1)[0]
     model: BaseChatModel = init_chat_model(
         settings.llm_model,
-        temperature=settings.llm_temperature,
+        # Anthropic runs on its API default; `LLM_TEMPERATURE` applies to other providers.
+        temperature=settings.llm_temperature if provider != "anthropic" else None,
         **_provider_kwargs(settings.llm_model, settings),
     )
     return model
