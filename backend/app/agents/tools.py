@@ -41,5 +41,11 @@ def make_search_documents_tool(vector_store: DocumentVectorStore, k: int) -> Bas
     return search_documents
 
 
+# TODO(advanced): when there are several tools, turn this module into a package
+# (app/agents/tools/{__init__,search,documents}.py), one factory per tool, with
+# `get_tools()` in __init__ as the single list passed to both `bind_tools` and `ToolNode`.
+# Each new tool keeps the rules of search_documents: deps injected via closure,
+# `user_id` from `runtime.context` only, its own DB session from `session_factory`,
+# plus a test proving user A cannot reach user B's data through it.
 def get_tools(vector_store: DocumentVectorStore, k: int = 5) -> list[BaseTool]:
     return [make_search_documents_tool(vector_store, k)]

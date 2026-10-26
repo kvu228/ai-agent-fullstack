@@ -90,6 +90,13 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
 
+    # TODO(advanced): add a RequestContextMiddleware (pure ASGI, not BaseHTTPMiddleware,
+    # which has a history of trouble with streaming responses and BackgroundTasks): reuse an
+    # incoming X-Request-ID or make one, store it in a ContextVar + logging.Filter so every
+    # log line carries it, wrap `send` to read the status and echo X-Request-ID back, and log
+    # "METHOD path -> status, headers after X ms, total Y ms". Things worth observing:
+    #   - /chat/stream: headers go out early, total = the whole agent answer (SSE)
+    #   - POST /documents: total includes ingestion (BackgroundTasks run inside the ASGI call)
     # Only needed for clients calling the API directly from another origin. The Next.js
     # frontend proxies /api/* (same origin), so browsers never need CORS for it.
     app.add_middleware(
