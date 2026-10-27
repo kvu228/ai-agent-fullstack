@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     retrieval_k: int = 5
 
+    # ---- LangSmith tracing -----------------------------------------------------------
+    # LangSmith reads os.environ, not Settings: see app/core/tracing.py.
+    langsmith_tracing: bool = False
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "AI Agent"
+
     anthropic_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
 

@@ -18,6 +18,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
+from app.core.tracing import configure_tracing
 from app.db.session import create_engine, create_session_factory
 from app.ingestion.pipeline import IngestionPipeline
 from app.storage.s3 import S3Storage
@@ -28,6 +29,8 @@ from app.vectorstore.chroma import DocumentVectorStore, create_chroma_client
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown hook: build expensive, shared objects exactly once."""
     settings = get_settings()
+    # Here and not in create_app(): the lifespan doesn't run in tests, so tests never trace.
+    configure_tracing(settings)
 
     # Postgres (SQLAlchemy) for our own tables: users, documents, conversations...
     engine = create_engine(settings)
