@@ -9,6 +9,7 @@ Useful to experiment with prompts, tools and the graph in isolation.
 
 import argparse
 import asyncio
+import sys
 import uuid
 
 from langchain_core.messages import HumanMessage
@@ -76,4 +77,6 @@ async def main(email: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--email", required=True, help="whose documents to search")
-    asyncio.run(main(parser.parse_args().email))
+    # psycopg's async mode can't run on Windows' default ProactorEventLoop.
+    loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
+    asyncio.run(main(parser.parse_args().email), loop_factory=loop_factory)
