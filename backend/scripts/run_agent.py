@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from app.agents import AgentContext, build_agent_graph, get_chat_model, get_embeddings, get_tools
 from app.core.config import get_settings
+from app.core.tracing import configure_tracing
 from app.db.session import create_engine, create_session_factory
 from app.models import User
 from app.vectorstore.chroma import DocumentVectorStore, create_chroma_client
@@ -35,6 +36,7 @@ async def find_user_id(email: str) -> uuid.UUID:
 
 async def main(email: str) -> None:
     settings = get_settings()
+    configure_tracing(settings)
     context = AgentContext(user_id=await find_user_id(email))
     vector_store = DocumentVectorStore(
         create_chroma_client(settings), get_embeddings(settings), settings.chroma_collection
