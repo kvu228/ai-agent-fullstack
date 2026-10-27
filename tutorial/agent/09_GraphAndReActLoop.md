@@ -122,7 +122,7 @@ sequenceDiagram
     Note over A: Observe: Orion chưa rõ → tìm lại
     A->>T: search_documents("Orion release timeline")
     T->>A: ToolMessage(...)
-    A-->>A: AIMessage("Atlas: tháng 3 [atlas.pdf, p.2]; Orion: Q3 [orion.md]") → END
+    A-->>A: AIMessage("Atlas: tháng 3 [atlas.pdf, p.2], Orion: Q3 [orion.md]") → END
 ```
 
 **ReAct** = *Reasoning + Acting*: LLM xen kẽ suy nghĩ và hành động, quan sát kết quả rồi quyết định
