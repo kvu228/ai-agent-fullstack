@@ -1,0 +1,43 @@
+# Weekly dependency update PRs. Each PR runs through CI like any other change.
+# Minor and patch updates are grouped into one PR per ecosystem; major updates get their own PR
+# because they are the ones that break things.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7 # skip releases younger than a week: a compromised release is usually pulled by then
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  # Updates the SHA pins in .github/workflows (and the version comment next to them).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Base images in the Dockerfiles (python:3.12-slim, node:22-alpine, uv).
+  - package-ecosystem: docker
+    directories: [/backend, /frontend]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

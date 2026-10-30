@@ -1,0 +1,169 @@
+# Lint, test and build the backend and the frontend on every pull request and every push to main.
+# Tutorial: tutorial/platform/01_ContinuousIntegration.md · Decision: docs/adr/0001-ci-github-actions.md
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: the GITHUB_TOKEN can only read the repo unless a job asks for more.
+permissions:
+  contents: read
+
+# A new push to the same PR cancels the run that is still going. Runs on main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Decide which parts to check. Pull requests only check what they touch; pushes to main check
+  # everything (and fill the caches that pull requests reuse).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Job-level permissions replace the workflow-level ones, so contents: read is repeated.
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter lists the PR's files through the API
+    outputs:
+      services: ${{ steps.result.outputs.services }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'frontend/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+      - id: result
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ steps.filter.outputs.changes }}
+        run: |
+          if [ "$EVENT" = "push" ]; then CHANGED='["backend","frontend"]'; fi
+          echo "services=$CHANGED" >> "$GITHUB_OUTPUT"
+
+  backend:
+    name: Backend (lint + test)
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.services), 'backend')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      UV_LOCKED: "1" # every uv command fails if uv.lock is out of date with pyproject.toml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          working-directory: backend
+          enable-cache: true
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync
+      - name: Lint (ruff, mypy)
+        run: make lint-backend
+      - name: Test (pytest + coverage)
+        run: make test-backend PYTEST_ARGS="--cov --cov-report=term --cov-report=markdown-append:$GITHUB_STEP_SUMMARY"
+
+  frontend:
+    name: Frontend (lint + test)
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.services), 'frontend')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22" # same major as frontend/Dockerfile
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Lint (eslint, tsc)
+        run: make lint-frontend
+      - name: Test (vitest)
+        run: make test-frontend
+
+  # Build each image (without pushing) to catch Dockerfile errors, then scan it for vulnerabilities.
+  docker:
+    name: Docker (${{ matrix.service }})
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.service }}
+          push: false
+          load: true # keep the image in the local Docker daemon so Trivy can scan it
+          tags: ai-agent-fullstack/${{ matrix.service }}:ci
+          # Layer cache stored in the GitHub Actions cache, one scope per image.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-agent-fullstack/${{ matrix.service }}:ci
+          # Vulnerabilities only. The secret scanner flags example strings inside third-party
+          # packages (e.g. docstrings in the anthropic SDK); secrets in our own code are caught by
+          # GitHub secret scanning on the repository instead.
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true # only fail on vulnerabilities that have a fix to upgrade to
+          exit-code: "1"
+          format: table
+          output: trivy.txt
+      - name: Add Trivy report to the job summary
+        if: always()
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          if [ -f trivy.txt ]; then
+            {
+              echo "### Trivy: $SERVICE (HIGH, CRITICAL, fixable)"
+              echo '```'
+              cat trivy.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # The single check to require in branch protection. Skipped jobs (nothing changed) count as
+  # success; a failed or cancelled job fails this one.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [changes, backend, frontend, docker]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then exit 1; fi
+          done

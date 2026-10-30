@@ -2,7 +2,8 @@
 
 ## 🎯 Mục tiêu
 
-- Đọc hiểu `backend/Dockerfile`: **multi-stage**, cache layer dependency với `uv`, chạy **non-root**, `HEALTHCHECK`.
+- Nắm các khái niệm Docker nền tảng: image, container, Dockerfile, layer & cache.
+- Đọc hiểu **từng dòng** của `backend/Dockerfile`: **multi-stage**, cache layer dependency với `uv`, chạy **non-root**, `HEALTHCHECK`, `CMD`.
 - Chạy toàn bộ hệ thống trong Docker Compose: migrate → backend → frontend, đúng thứ tự.
 - Hiểu cấu hình mạng khi backend nằm **trong** Docker (hostname service, endpoint S3 công khai).
 - Có một **checklist production** rõ ràng cho AWS (RDS, S3, secrets, scaling).
@@ -16,60 +17,96 @@
 
 ---
 
+## 0. Docker cơ bản
+
+| Khái niệm | Hiểu đơn giản |
+| --- | --- |
+| **Image** | Một "ổ đĩa đóng băng": hệ điều hành tối giản + Python + thư viện + code, đóng gói thành một khối không đổi. |
+| **Container** | Một process đang chạy từ image, như một máy tính nhỏ cô lập. Một image chạy được nhiều container. |
+| **Dockerfile** | Công thức tạo image. Docker đọc từ trên xuống, mỗi lệnh là một bước. |
+| **Layer & cache** | Mỗi lệnh `COPY`/`RUN` tạo một **layer** chồng lên layer trước. Khi build lại, bước nào không đổi (cả input lẫn mọi bước trước nó) thì Docker dùng lại kết quả cũ (`CACHED`). Một bước thay đổi → **mọi bước sau nó** chạy lại. |
+
+`backend/Dockerfile` dùng **multi-stage build**: hai giai đoạn, mỗi giai đoạn bắt đầu bằng một `FROM`.
+
+```
+┌─ Stage 1: builder ──────────────┐      ┌─ Stage 2: runtime (image cuối) ─┐
+│ Python + uv                     │      │ Python (sạch)                   │
+│ cài thư viện → /app/.venv       │ ───► │ chỉ copy /app (code + .venv)    │
+│ copy code → /app                │      │ user không phải root            │
+└─────────────────────────────────┘      └─────────────────────────────────┘
+      bị bỏ đi sau khi build                    thứ được deploy
+```
+
+Stage 1 dùng để "nấu", stage 2 chỉ nhận "món ăn". Dụng cụ nấu (`uv`, cache tải package) không đi theo vào image cuối.
+
 ## 1. Dockerfile — giai đoạn builder
 
 ```dockerfile
 FROM python:3.12-slim AS builder
-COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
+```
 
+- `FROM`: chọn **base image** làm điểm xuất phát, thay vì tự cài Linux + Python từ đầu. Image được tải từ Docker Hub.
+- `python:3.12-slim`: Debian tối giản + Python 3.12 (~150 MB). Các biến thể khác:
+  - `python:3.12` (bản đầy đủ, ~1 GB): kèm compiler và nhiều công cụ không cần thiết.
+  - `python:3.12-alpine`: nhỏ hơn nữa nhưng dùng thư viện C `musl` thay `glibc`. Nhiều package Python (numpy, driver DB…) không có bản build sẵn cho musl, phải compile → build chậm, dễ lỗi.
+- `AS builder`: đặt tên stage để stage sau lấy file từ nó.
+
+```dockerfile
+COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
+```
+
+- `COPY` bình thường chép file từ máy bạn vào image. `--from=<image>` chép file **từ một image khác**.
+- Lấy đúng binary `uv` từ image chính thức thay vì `pip install uv`: nhanh, gọn.
+- **Ghim version** `0.12.12` → mọi lần build dùng cùng một bản uv, build lặp lại được (reproducible).
+
+```dockerfile
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=0
+```
 
+`ENV` đặt biến môi trường cho các bước sau (`\` chỉ để xuống dòng). Ba biến cấu hình `uv`:
+
+- `UV_COMPILE_BYTECODE=1`: biên dịch `.py` → `.pyc` lúc build → container khởi động nhanh hơn.
+- `UV_LINK_MODE=copy`: mặc định uv *hardlink* file từ cache sang `.venv`. Trong Docker, cache và `.venv` thường khác filesystem nên không link được (uv cảnh báo) → copy thẳng.
+- `UV_PYTHON_DOWNLOADS=0`: cấm uv tự tải Python khác, dùng đúng Python 3.12 của image.
+
+```dockerfile
 WORKDIR /app
+```
 
+Tương đương `mkdir -p /app && cd /app`: mọi lệnh sau chạy trong `/app`.
+
+```dockerfile
 # Install dependencies first, in their own layer: it is only rebuilt when
 # pyproject.toml / uv.lock change, not on every code edit.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
-
-COPY . .
 ```
 
-- `COPY --from=ghcr.io/astral-sh/uv:0.12.12`: lấy đúng binary `uv` từ image chính thức, **ghim version** để build lặp lại được.
-- `UV_COMPILE_BYTECODE=1`: biên dịch `.pyc` lúc build → container khởi động nhanh hơn. `UV_LINK_MODE=copy`: copy file thay vì hardlink (không cùng filesystem với cache). `UV_PYTHON_DOWNLOADS=0`: dùng Python của image, không tải bản khác.
-- **Thứ tự layer** là mấu chốt: copy `pyproject.toml` + `uv.lock` → cài dependency → *rồi mới* copy code. Sửa một dòng code chỉ build lại layer cuối (vài giây), không cài lại LangChain, boto3… (vài phút).
-- `--locked`: lỗi nếu `uv.lock` lệch với `pyproject.toml` — production cài **đúng** những gì đã test. `--no-dev`: không có pytest/ruff/mypy trong image.
+**Thứ tự layer** là mấu chốt của cả file. Bước đầu **chỉ** copy hai file khai báo thư viện, chưa copy code; `RUN` chạy một lệnh **lúc build**, ở đây là cài thư viện vào `/app/.venv`.
+
+Code thay đổi hằng ngày, danh sách thư viện thì hiếm khi. Sửa một dòng code rồi build lại:
+
+```
+COPY pyproject.toml uv.lock   → CACHED (2 file không đổi)
+RUN uv sync ...               → CACHED (bỏ qua cài LangChain, boto3… mất vài phút)
+COPY . .                      → chạy lại (code đổi) — vài giây
+```
+
+Nếu `COPY . .` đứng trước, mỗi lần sửa code là cài lại toàn bộ thư viện.
+
+- `--locked`: cài **đúng** version trong `uv.lock`; lỗi ngay nếu `uv.lock` lệch với `pyproject.toml` — production chạy đúng những gì đã test.
+- `--no-dev`: không có pytest/ruff/mypy trong image.
+- `--no-install-project`: chỉ cài dependency, không cài chính project. Project đặt `package = false` nên vốn không có gì để cài, nhưng đây là pattern chuẩn của uv cho Docker.
 
 > Tối ưu thêm (cần BuildKit/buildx): `RUN --mount=type=cache,target=/root/.cache/uv uv sync ...` giữ cache tải package giữa các lần build. Project không dùng vì Docker trên máy viết tutorial không có buildx (`the --mount option requires BuildKit`); nếu máy bạn có, nên thêm.
 
-## 2. Dockerfile — giai đoạn runtime
-
 ```dockerfile
-FROM python:3.12-slim
-
-# Never run as root inside the container.
-RUN useradd --create-home --uid 1000 app
-WORKDIR /app
-COPY --from=builder --chown=app:app /app /app
-
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
-USER app
-
-EXPOSE 8000
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"
-
-CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+COPY . .
 ```
 
-- **Multi-stage**: image cuối không chứa `uv` hay cache build, chỉ có `.venv` + code.
-- **Non-root** (`USER app`): nếu có lỗ hổng RCE, kẻ tấn công không có quyền root trong container.
-- `PATH` trỏ vào `.venv/bin` → gọi thẳng `fastapi`, `alembic` (job `migrate` dùng chính image này).
-- `PYTHONUNBUFFERED=1`: log ra stdout ngay, không bị giữ trong buffer — quan trọng cho `docker logs`/CloudWatch.
-- `HEALTHCHECK` gọi **liveness** `/api/v1/health` (bài 14) bằng `urllib` — image slim không có `curl`.
-- `--proxy-headers`: tin header `X-Forwarded-For/Proto` từ load balancer (để biết request gốc là HTTPS, IP thật của client). Uvicorn mặc định chỉ tin các header này khi đến từ `127.0.0.1`; sau ALB cần đặt thêm `FORWARDED_ALLOW_IPS` (dải IP của load balancer).
+Copy cả thư mục `backend/` (`.` thứ nhất, gọi là *build context*) vào `/app` (`.` thứ hai). `backend/.dockerignore` loại trừ:
 
 ```
 # .dockerignore
@@ -82,7 +119,85 @@ CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000", "--
 tests
 ```
 
-`.venv` của máy bạn (macOS) không chạy được trong Linux; `.env` chứa secret, **không bao giờ** được nằm trong image.
+- `.venv`: `.venv` trên máy bạn (macOS) chứa thư viện build cho macOS; nếu copy vào sẽ **ghi đè** `.venv` Linux vừa cài ở bước trên.
+- `.env`: chứa secret, **không bao giờ** được nằm trong image.
+- `tests`, các thư mục cache: production không cần.
+
+## 2. Dockerfile — giai đoạn runtime
+
+```dockerfile
+FROM python:3.12-slim
+```
+
+`FROM` lần hai bắt đầu một image **mới tinh**. Mọi thứ của `builder` bị bỏ lại, trừ những gì ta chủ động copy sang → image cuối không chứa `uv` hay cache build. (Với project này lợi ích dung lượng còn khiêm tốn; nó lớn thấy rõ khi phải cài `gcc` để compile thư viện — compiler chỉ nằm ở builder.)
+
+```dockerfile
+# Never run as root inside the container.
+RUN useradd --create-home --uid 1000 app
+```
+
+Mặc định process trong container chạy bằng **root**. Nếu app có lỗ hổng RCE, kẻ tấn công có quyền root trong container. Dòng này tạo user thường `app`.
+
+- `--uid 1000`: kernel Linux nhận diện user bằng **số** (UID), không phải tên; tên `app` chỉ là một dòng trong `/etc/passwd` của image. Ghim UID để nó **cố định và biết trước** (bỏ đi thì `useradd` chọn UID trống đầu tiên — hiện tình cờ là 1000, nhưng base image đổi thì có thể thành 1001). Biết trước UID cần cho:
+  - **Volume/bind mount**: file container ghi ra host thuộc UID 1000 — trên Linux thường chính là user của bạn, không phải `sudo chown`.
+  - **Kubernetes** `runAsNonRoot: true`: kubelet chỉ kiểm tra được UID dạng số. Với `USER app` (tên) phải khai báo thêm `runAsUser: 1000`, hoặc đổi Dockerfile thành `USER 1000`.
+  - **Storage dùng chung** như EFS access point (`posix_user { uid = 1000 }`).
+  - Trade-off: UID 1000 trùng user thật đầu tiên trên host, nên nếu container bị escape, kẻ tấn công có quyền của user đó. Nhiều hướng dẫn bảo mật dùng UID cao (`10001`) để tránh trùng.
+- `--create-home`: tạo `/home/app`. Nhiều thư viện ghi cache vào `$HOME` (ví dụ `~/.cache` của Hugging Face nếu chạy reranker local, [agent/13](../agent/13_NextSteps.md) §4.1).
+
+```dockerfile
+WORKDIR /app
+COPY --from=builder --chown=app:app /app /app
+```
+
+- `--from=builder`: copy từ **stage builder** (tên ở `AS builder`), không phải từ máy bạn — nguyên `/app` gồm code + `.venv` đã cài.
+- `--chown=app:app`: đổi chủ sở hữu sang user `app` (mặc định file copy vào thuộc root).
+
+```dockerfile
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+```
+
+- `PATH`: đặt `.venv/bin` lên đầu → `python`, `fastapi`, `alembic` gọi bản trong `.venv`. Tương đương `source .venv/bin/activate`.
+- `PYTHONUNBUFFERED=1`: Python mặc định gom output vào buffer rồi mới in; trong container điều đó làm log hiện trễ hoặc **mất khi crash**. Biến này bắt in ngay — quan trọng cho `docker logs`/CloudWatch.
+
+```dockerfile
+USER app
+```
+
+Từ đây trở đi, và **khi container chạy**, process chạy bằng `app` thay vì root.
+
+```dockerfile
+EXPOSE 8000
+```
+
+**Chỉ là tài liệu**: cho biết app lắng nghe cổng 8000. Nó **không** mở cổng ra ngoài; việc đó do `docker run -p 8000:8000` hoặc `ports:` trong `docker-compose.yml` làm.
+
+```dockerfile
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"
+```
+
+Docker tự chạy lệnh này **bên trong container** mỗi 10 s (`--interval`), mỗi lần chờ tối đa 3 s (`--timeout`); fail 5 lần liên tiếp (`--retries`) → container bị đánh dấu `unhealthy`.
+
+- Gọi **liveness** `/api/v1/health`, không phải readiness (bài [14](14_ErrorHandlingAndHealthChecks.md)): Chroma chậm không làm container bị coi là hỏng.
+- Dùng `urllib` của Python vì image slim **không có `curl`**; cài curl chỉ để healthcheck thì phí dung lượng.
+- Compose dựa vào kết quả này: `frontend` chờ `backend` có `condition: service_healthy` (mục 3).
+- ECS và Kubernetes **bỏ qua** `HEALTHCHECK` trong Dockerfile; chúng có cấu hình health check riêng (container health check, `livenessProbe`).
+
+```dockerfile
+# `fastapi run` = production uvicorn (no reload). --proxy-headers: trust X-Forwarded-*
+# from the load balancer in front of us.
+CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+```
+
+`CMD` là **lệnh mặc định khi container khởi động**. Khác `RUN`: `RUN` chạy **lúc build**, `CMD` chạy **lúc start**.
+
+- **Dạng mảng JSON** (*exec form*) thay vì chuỗi `fastapi run ...` (*shell form*): `fastapi` là process chính (PID 1) nên **nhận trực tiếp SIGTERM** khi Docker dừng container → kịp đóng kết nối DB, kết thúc stream (graceful shutdown). Với shell form, PID 1 là `/bin/sh`, tín hiệu không tới app; Docker chờ 10 s rồi kill cứng.
+- `fastapi run`: uvicorn chế độ production, không auto-reload như `fastapi dev`.
+- `--host 0.0.0.0`: lắng nghe trên **mọi** network interface. Với `127.0.0.1`, app chỉ nhận kết nối từ bên trong chính container → port mapping từ máy bạn không vào được.
+- `--proxy-headers`: tin header `X-Forwarded-For/Proto` từ load balancer (để biết request gốc là HTTPS, IP thật của client). Uvicorn mặc định chỉ tin các header này khi đến từ `127.0.0.1`; sau ALB cần đặt thêm `FORWARDED_ALLOW_IPS` (dải IP của load balancer).
+- `CMD` chỉ là **mặc định**: service `migrate` (mục 3) dùng **chính image này** nhưng ghi đè bằng `command: ["alembic", "upgrade", "head"]`. Một image, hai cách dùng.
 
 ## 3. Compose: chạy cả hệ thống
 
@@ -160,16 +275,27 @@ make down   # docker compose --profile app down
 
 - **`connection refused` tới `localhost:5433` từ container** → trong Docker phải dùng `postgres:5432`.
 - **Copy code trước khi cài dependency** → mỗi lần sửa code là cài lại toàn bộ package.
+- **Thiếu `.venv` trong `.dockerignore`** → `.venv` macOS ghi đè `.venv` Linux trong image, container lỗi khi import thư viện có phần native.
+- **`--host 127.0.0.1` trong container** → `curl localhost:8000` từ máy bạn bị `connection reset`/`refused` dù container vẫn chạy.
+- **`CMD` dạng chuỗi (shell form)** → app không nhận SIGTERM, `docker stop` luôn mất 10 s và kết nối bị cắt ngang.
 - **`uv.lock` không được commit** → `--locked` fail, hoặc tệ hơn, mỗi build ra version khác nhau.
 - **Chạy migration trong lifespan của mỗi replica** → race giữa các replica.
 - **Backend `unhealthy` mãi** → xem `docker compose logs backend`; thường là thiếu `OPENAI_API_KEY` hoặc không kết nối được Chroma.
 
 ## 🧪 Thực hành
 
-1. `make up`, rồi `docker compose ps` và `docker inspect --format '{{json .State.Health}}' <container-backend>`.
-2. Sửa một dòng trong `app/main.py`, chạy `docker compose --profile app build backend` và quan sát layer `uv sync` được lấy từ cache (`CACHED`).
-3. `docker compose exec backend whoami` → phải là `app`, không phải `root`.
-4. Chọn một mục trong checklist (ví dụ đọc `JWT_SECRET_KEY` từ SSM khi khởi động) và phác thảo cách triển khai.
+1. Build và soi image backend:
+   ```bash
+   cd backend
+   docker build -t rag-backend .
+   docker images rag-backend               # dung lượng image
+   docker history rag-backend              # từng layer và kích thước
+   docker run --rm rag-backend which python  # → /app/.venv/bin/python (nhờ PATH)
+   ```
+2. `make up`, rồi `docker compose ps` và `docker inspect --format '{{json .State.Health}}' <container-backend>`.
+3. Sửa một dòng trong `app/main.py`, chạy `docker compose --profile app build backend` và quan sát layer `uv sync` được lấy từ cache (`CACHED`).
+4. `docker compose exec backend whoami` → phải là `app`, không phải `root`.
+5. Chọn một mục trong checklist (ví dụ đọc `JWT_SECRET_KEY` từ SSM khi khởi động) và phác thảo cách triển khai.
 
 ---
 
