@@ -1,5 +1,6 @@
 # Shortcuts for common tasks. Run `make help` to list them.
-.PHONY: help install infra-up infra-down infra-logs migrate dev-backend dev-frontend up down test lint
+.PHONY: help install infra-up infra-down infra-logs migrate dev-backend dev-frontend up down \
+	test test-backend test-frontend lint lint-backend lint-frontend
 
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -32,10 +33,21 @@ up: ## Run EVERYTHING in Docker (infra + migrations + backend + frontend)
 down: ## Stop everything started by `make up`
 	docker compose --profile app down
 
-test: ## Run all tests (no Docker needed)
-	cd backend && uv run pytest
+test: test-backend test-frontend ## Run all tests (no Docker needed)
+
+# Extra pytest flags, e.g. `make test-backend PYTEST_ARGS="--cov -x"`. CI uses it for coverage.
+PYTEST_ARGS ?=
+
+test-backend: ## Run backend tests (pytest)
+	cd backend && uv run pytest $(PYTEST_ARGS)
+
+test-frontend: ## Run frontend tests (vitest)
 	cd frontend && npm test
 
-lint: ## Lint + type-check everything
+lint: lint-backend lint-frontend ## Lint + type-check everything
+
+lint-backend: ## ruff check, ruff format --check, mypy
 	cd backend && uv run ruff check . && uv run ruff format --check . && uv run mypy app scripts tests
+
+lint-frontend: ## eslint + tsc
 	cd frontend && npm run lint && npm run typecheck

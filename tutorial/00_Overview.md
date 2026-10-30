@@ -90,8 +90,12 @@ sequenceDiagram
 
 ```
 ai-agent-fullstack/
+├── .github/
+│   ├── workflows/ci.yml     # CI: lint + test + build image + Trivy cho mỗi PR
+│   └── dependabot.yml       # PR cập nhật dependency, action, base image hằng tuần
 ├── docker-compose.yml       # postgres, floci, chroma (+ profile "app": migrate, backend, frontend)
 ├── Makefile                 # make infra-up / migrate / dev-backend / dev-frontend / up / test / lint
+├── docs/adr/                # Architecture Decision Records: vì sao chọn cách này
 ├── backend/
 │   ├── Dockerfile, alembic.ini, pyproject.toml, .env.example
 │   ├── migrations/          # Alembic: env.py + versions/
@@ -154,6 +158,9 @@ Mỗi thư mục được đánh số `xx_FileName.md`. Lộ trình đi từ "kh
    SSE streaming, xử lý lỗi & health check, testing, Docker & checklist production.
 4. **Frontend** — [frontend/01](frontend/01_ProjectSetup.md) → [frontend/15](frontend/15_DockerAndDeployment.md)
    App Router & route groups, Server/Client Components, proxy rewrites, API client tự refresh token, luồng đăng nhập, SSE, reducer, custom hooks, trang chat & tài liệu, test, Docker.
+5. **Platform** — [platform/01](platform/01_ContinuousIntegration.md) → …
+   CI với GitHub Actions; các bài tiếp theo (evaluation, hàng đợi, Redis, observability, load test) theo `todo.md` ở root.
+   Có thể học [platform/01](platform/01_ContinuousIntegration.md) ngay sau [backend/16](backend/16_DockerAndProduction.md); job frontend của CI chỉ cần [frontend/14](frontend/14_TestingAndQuality.md)–[15](frontend/15_DockerAndDeployment.md).
 
 > 💡 Mỗi bài đều có mục **🧪 Thực hành** — hãy làm, vì đó là lúc kiến thức "dính".
 
