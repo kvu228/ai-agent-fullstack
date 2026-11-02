@@ -8,7 +8,8 @@ A learning project: a RAG document assistant. Users upload PDF/TXT/Markdown file
 
 - `backend/`: Python 3.12, FastAPI, LangGraph, SQLAlchemy 2 (async) + Alembic, ChromaDB, boto3. Managed with **uv** (`package = false`, so it is not an installable package).
 - `frontend/`: Next.js 16 App Router, React 19, TypeScript, Tailwind 4, Vitest.
-- `tutorial/`: step-by-step tutorials in Vietnamese that explain the code. If you change code that a tutorial walks through, the tutorial may need the same change.
+- `tutorial/`: step-by-step tutorials in Vietnamese that explain the code. If you change code that a tutorial walks through, the tutorial may need the same change. `tutorial/platform/` covers CI and the other items in `todo.md`.
+- `docs/adr/`: architecture decision records (`NNNN-title.md`), one per significant decision.
 
 ## Commands
 
@@ -21,9 +22,14 @@ make migrate                  # alembic upgrade head
 make dev-backend              # uv run fastapi dev app/main.py  → :8000/docs
 make dev-frontend             # next dev → :3000
 make up / make down           # whole stack in Docker (compose profile "app")
-make test                     # pytest + vitest
-make lint                     # ruff check, ruff format --check, mypy (strict), eslint, tsc
+make test                     # pytest + vitest  (= test-backend + test-frontend)
+make lint                     # ruff check, ruff format --check, mypy (strict), eslint, tsc  (= lint-backend + lint-frontend)
+make test-backend PYTEST_ARGS="--cov"   # with coverage, as CI runs it (fails under 80%)
 ```
+
+### CI
+
+`.github/workflows/ci.yml` runs on every PR and every push to `main`. A `changes` job decides which of backend/frontend to check (pushes to `main` check both); the jobs call the same `make lint-*` / `make test-*` targets you run locally, so change a lint or test command in the `Makefile`, not in the workflow. A `docker` matrix job builds each image and fails on fixable HIGH/CRITICAL vulnerabilities (Trivy). `CI result` is the single check required by branch protection; add any new job to its `needs`. Actions are pinned by commit SHA (Dependabot updates them). `UV_LOCKED=1` is set in CI, so changing `pyproject.toml` without running `uv lock` fails the build.
 
 Single tests:
 

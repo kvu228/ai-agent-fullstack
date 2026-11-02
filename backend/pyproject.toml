@@ -32,6 +32,7 @@ dev = [
     "mypy>=2.4.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.1",
 ]
 
@@ -49,6 +50,14 @@ select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+# Only applies when coverage is on (`pytest --cov`, as in CI). Baseline was 85%:
+# raise this as coverage improves so it can only go up.
+fail_under = 80
 
 [tool.mypy]
 python_version = "3.12"

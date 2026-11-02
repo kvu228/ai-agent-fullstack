@@ -77,6 +77,10 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
+# The server only needs `node`. The npm bundled with the base image is unused here and
+# brings its own vulnerable dependencies into the image scan.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
@@ -88,6 +92,7 @@ CMD ["node", "server.js"]
 ```
 
 - Stage cuối bắt đầu **từ image sạch**: source code, `node_modules` đầy đủ, cache build đều bị bỏ lại.
+- Xoá `npm`/`npx` khỏi stage runtime: server chỉ cần `node`. Image `node:22-alpine` có sẵn npm kèm hàng trăm package của riêng nó; Trivy trong CI ([platform/01](../platform/01_ContinuousIntegration.md)) báo lỗ hổng HIGH ở các package đó dù app không bao giờ gọi tới. Thứ không có trong image thì không thể bị khai thác và không cần vá.
 - `HOSTNAME=0.0.0.0` — mặc định server chỉ nghe `localhost` **bên trong container** → từ bên ngoài không truy cập được.
 - `USER node` + `--chown=node:node` — không chạy bằng root; lỡ có lỗ hổng thì kẻ tấn công cũng chỉ có quyền user thường.
 - `CMD ["node", "server.js"]` dạng mảng (exec form) → Node là PID 1, nhận `SIGTERM` khi `docker stop` để tắt gọn.
@@ -182,4 +187,4 @@ Nếu có reverse proxy (nginx, load balancer) trước Next.js: tắt buffering
 
 ---
 
-⬅️ Trước: [14 · Testing & chất lượng code](14_TestingAndQuality.md) · ➡️ Tiếp: [00 · Tổng quan](../00_Overview.md)
+⬅️ Trước: [14 · Testing & chất lượng code](14_TestingAndQuality.md) · ➡️ Tiếp: [Platform 01 · Continuous Integration](../platform/01_ContinuousIntegration.md)
