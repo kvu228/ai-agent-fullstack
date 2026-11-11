@@ -33,6 +33,13 @@ def build_agent_graph(
 
     builder.add_edge(START, AGENT_NODE)
     # `tools_condition` routes to "tools" if the last AI message has tool_calls, else END.
+    # TODO(advanced): human approval for side-effect tools (delete/send/update), see
+    # todo.md §5. Call `interrupt({...})` at the top of the tool itself rather than a
+    # safe/sensitive router + `interrupt_before` (static interrupts are meant for debugging),
+    # so this graph and `tools_condition` stay as they are. Watch out for:
+    #   - on resume the tool runs again from the top: no side effects before `interrupt()`
+    #   - several tool calls in one turn can raise several interrupts at once
+    #   - it needs a resume endpoint (`Command(resume=...)`) + a new StreamEvent + UI
     builder.add_conditional_edges(AGENT_NODE, tools_condition, {"tools": TOOLS_NODE, END: END})
     builder.add_edge(TOOLS_NODE, AGENT_NODE)
 
