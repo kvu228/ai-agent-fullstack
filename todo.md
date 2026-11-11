@@ -23,7 +23,7 @@ Nền móng: các mục sau đều chạy trong CI.
 - [x] Job build Docker image cho `backend/` và `frontend/` (chỉ build, chưa push) để bắt lỗi Dockerfile sớm
 - [x] Scan image bằng Trivy (đã nằm trong checklist ở backend/16). Lần đầu tìm ra `certifi`/`filelock`/`pypdf` và `npm` trong image frontend, đã sửa
 - [x] Coverage cho pytest (`pytest-cov`), in báo cáo trong summary của job. Baseline 85%, `fail_under = 80`
-- [ ] Bật branch protection cho `main`: bắt buộc check `CI result` trước khi merge (cần workflow chạy ít nhất một lần trên GitHub; các bước ở platform/01 mục 8)
+- [x] Bật branch protection cho `main`: bắt buộc check `CI result` trước khi merge (cần workflow chạy ít nhất một lần trên GitHub; các bước ở platform/01 mục 8)
 - [x] Dependabot cho `uv.lock`, `package-lock.json`, GitHub Actions và base image
 - [x] ADR: `docs/adr/0001-ci-github-actions.md`
 - [x] Tutorial: `tutorial/platform/01_ContinuousIntegration.md`
@@ -112,3 +112,24 @@ Checklist ở backend/16: log JSON có request id, metrics, tracing, cảnh báo
 - [ ] Tutorial: `tutorial/platform/05_Observability.md`, `tutorial/platform/06_LoadTesting.md`
 
 **Xong khi**: có dashboard và SLO; có một báo cáo load test ghi rõ giới hạn hiện tại, điểm nghẽn và kết quả sau khi sửa.
+
+## 5. Human-in-the-loop: xoá tài liệu qua chat có xác nhận
+
+Làm sau khi mục 2 có baseline end-to-end (mốc 2), để eval chấm được cả tính năng này. Xoá là hành động không hoàn tác được, nên cần người duyệt là có lý do thật.
+
+- [ ] ADR: `interrupt()` bên trong tool, `interrupt_before` + router safe/sensitive, hay `HumanInTheLoopMiddleware` của `create_agent`; vì sao interrupt tĩnh (`interrupt_before`) chỉ nên dùng để debug
+- [ ] Tool `delete_document`: gọi `interrupt({...})` ở **đầu** tool, trước mọi tác dụng phụ (khi resume, tool chạy lại từ đầu); `user_id` vẫn lấy từ `runtime.context`
+- [ ] Dùng lại `DocumentService.delete` (row + chunk Chroma + file S3), không viết lại logic xoá; kiểm tra quyền sở hữu lúc thực thi
+- [ ] `ChatService.stream`: nhận `__interrupt__` trong mode `updates`, phát `StreamEvent` mới `approval_required` (tên file, thông tin cần duyệt) thay cho `done`
+- [ ] Endpoint resume (`POST /chat/resume`): `astream(Command(resume=decision), config)` trên cùng `thread_id`; kiểm tra quyền sở hữu hội thoại trong dependency, như `get_chat_conversation`
+- [ ] Quyết định: đồng ý / huỷ (cân nhắc có cho sửa tham số không)
+- [ ] Chính sách khi user không trả lời mà gửi tin nhắn mới: tự coi là huỷ
+- [ ] Một lượt có nhiều tool call → nhiều interrupt cùng lúc
+- [ ] `messages()` đọc interrupt đang chờ từ `aget_state`, để tải lại trang vẫn thấy yêu cầu duyệt
+- [ ] Frontend: event mới trong `sse.ts` / `chatReducer`, nút Đồng ý / Huỷ, test cho reducer
+- [ ] Test backend (fake LLM + `InMemorySaver`): nhánh đồng ý, nhánh huỷ, resume hội thoại của user khác bị 404
+- [ ] Eval: thêm câu vào golden dataset: không bao giờ xoá khi chưa được duyệt; huỷ thì tài liệu còn nguyên; câu không liên quan không gọi tool xoá
+- [ ] Đo: restart API trong lúc đang chờ duyệt, resume vẫn chạy (checkpoint nằm trong Postgres)
+- [ ] Tutorial: `tutorial/platform/07_HumanInTheLoop.md`
+
+**Xong khi**: xoá tài liệu qua chat luôn cần xác nhận (eval: 0 lần xoá khi chưa duyệt), huỷ thì không mất gì, và restart server giữa lúc chờ duyệt vẫn resume được.
