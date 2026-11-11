@@ -21,6 +21,10 @@ COPY . .
 # ---- runtime ------------------------------------------------------------------------
 FROM python:3.12-slim
 
+# Pick up Debian security fixes before the upstream python image is rebuilt with them.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # Never run as root inside the container.
 RUN useradd --create-home --uid 1000 app
 WORKDIR /app

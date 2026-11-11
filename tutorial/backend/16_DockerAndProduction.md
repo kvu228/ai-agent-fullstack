@@ -132,6 +132,18 @@ FROM python:3.12-slim
 `FROM` lần hai bắt đầu một image **mới tinh**. Mọi thứ của `builder` bị bỏ lại, trừ những gì ta chủ động copy sang → image cuối không chứa `uv` hay cache build. (Với project này lợi ích dung lượng còn khiêm tốn; nó lớn thấy rõ khi phải cài `gcc` để compile thư viện — compiler chỉ nằm ở builder.)
 
 ```dockerfile
+# Pick up Debian security fixes before the upstream python image is rebuilt with them.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+Base image `python:3.12-slim` chứa sẵn các gói Debian (`zlib1g`, `libssl`...). Khi Debian công bố bản vá cho một CVE, image chính thức phải vài ngày sau mới được build lại; trong lúc đó Trivy trong CI ([platform/01](../platform/01_ContinuousIntegration.md)) báo HIGH/CRITICAL và mọi PR đều đỏ. `apt-get upgrade` lấy bản vá ngay lúc build.
+
+- Chỉ cần ở stage **runtime**: stage `builder` không nằm trong image cuối.
+- `rm -rf /var/lib/apt/lists/*` xoá danh sách gói vừa tải về, không để chúng làm nặng layer.
+- Trade-off: build hai lần cách nhau vài ngày có thể ra image khác nhau (kém tái lập hơn một chút). Đổi lại, không bị chặn chờ upstream mỗi lần có CVE ở tầng OS.
+
+```dockerfile
 # Never run as root inside the container.
 RUN useradd --create-home --uid 1000 app
 ```
