@@ -7,12 +7,14 @@ upload ──► [S3] ──► load (pypdf / utf-8) ──► split ──► e
 
 import asyncio
 import logging
+import time
 import uuid
 
 from langchain_core.documents import Document as LCDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.logging import bind_log_context
 from app.ingestion.loaders import load_document
 from app.models import Document, DocumentStatus
 from app.storage.s3 import S3Storage
@@ -52,9 +54,14 @@ class IngestionPipeline:
 
     async def run(self, document_id: uuid.UUID) -> None:
         """Ingest one document. Runs in the background, so it opens its own DB session."""
+        # A BackgroundTask runs inside the upload's request context: these logs carry the
+        # upload's request_id and user_id, so one id follows the document from upload to ready.
+        bind_log_context(document_id=str(document_id))
+        start = time.perf_counter()
         async with self._session_factory() as session:
             document = await session.get(Document, document_id)
             if document is None:
+                logger.warning("Document to ingest not found")
                 return
             try:
                 data = await self._storage.download(document.s3_key)
@@ -68,7 +75,18 @@ class IngestionPipeline:
                 document.chunk_count = len(chunks)
                 document.status = DocumentStatus.READY
             except Exception as exc:
-                logger.exception("Ingestion failed for document %s", document_id)
+                # The error is handled here (status=failed), so it is logged here, once.
+                logger.exception("Document ingestion failed")
                 document.status = DocumentStatus.FAILED
                 document.error = str(exc)[:500]
             await session.commit()
+
+        if document.status == DocumentStatus.READY:
+            logger.info(
+                "Document ingested",
+                extra={
+                    "chunks": document.chunk_count,
+                    "size_bytes": document.size_bytes,
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 1),
+                },
+            )

@@ -38,7 +38,7 @@ async def readiness(request: Request, response: Response) -> ReadinessResponse:
             await asyncio.wait_for(probe(), timeout=3)
             return name, True
         except Exception:
-            logger.warning("Readiness check failed: %s", name, exc_info=True)
+            logger.warning("Readiness check failed", extra={"check": name}, exc_info=True)
             return name, False
 
     results = await asyncio.gather(

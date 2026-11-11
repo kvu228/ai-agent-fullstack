@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
+from app.core.logging import bind_log_context
 from app.core.security import decode_access_token
 from app.ingestion.pipeline import IngestionPipeline
 from app.models import Conversation, User
@@ -112,6 +113,9 @@ async def get_current_user(
     user = await db.get(User, user_id)
     if user is None or not user.is_active:
         raise AuthenticationError("User not found or inactive")
+    # The id, never the email (PII). This is an async dependency, so it runs in the request's
+    # own task and the field shows up on every later log line, the request log included.
+    bind_log_context(user_id=str(user.id))
     return user
 
 
@@ -147,7 +151,11 @@ async def get_chat_conversation(
     Once streaming begins the 200 status is already sent, so a 404 for someone
     else's conversation must happen here, in a dependency.
     """
-    return await service.get_or_create_conversation(user, body.conversation_id, body.message)
+    conversation = await service.get_or_create_conversation(
+        user, body.conversation_id, body.message
+    )
+    bind_log_context(conversation_id=str(conversation.id))
+    return conversation
 
 
 ChatConversation = Annotated[Conversation, Depends(get_chat_conversation)]
