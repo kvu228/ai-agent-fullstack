@@ -155,14 +155,13 @@ Trình duyệt gọi `http://localhost:3000/api/v1/...`, Next.js chuyển tiếp
 ## 5. Logging
 
 ```python
-def setup_logging(level: str = "INFO") -> None:
-    logging.basicConfig(
-        level=level.upper(),
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+def _setup_logging(settings: Settings) -> None:
+    setup_logging(
+        settings.log_level, settings.log_format, static_fields={"env": settings.environment}
     )
 ```
 
-Mỗi module dùng `logging.getLogger(__name__)`. Bài 14 nói thêm về log lỗi.
+Mỗi module dùng `logging.getLogger(__name__)`. `LOG_FORMAT=text` (mặc định) in log dễ đọc cho người, `LOG_FORMAT=json` in mỗi dòng một object JSON cho production. `create_app()` còn thêm `RequestContextMiddleware` để gắn `request_id` vào mọi dòng log. `setup_logging` được gọi **cả** trong lifespan, vì `fastapi run` import app trước khi uvicorn cấu hình log của nó. Chi tiết ở [platform/05](../platform/05_Observability.md). Bài 14 nói thêm về log lỗi.
 
 ## 6. `fastapi dev` vs `fastapi run`
 

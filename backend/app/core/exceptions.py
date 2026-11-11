@@ -5,6 +5,9 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.core.logging import get_log_context
+from app.core.middleware import REQUEST_ID_HEADER
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,10 +67,21 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers=headers,
         )
 
+    # Not logged: 4xx are the client's mistake and expected (wrong password, 404...). The
+    # request log line already has the status; logging them at ERROR would page someone
+    # for nothing. Security-relevant ones are logged where they happen (auth_service).
+
     @app.exception_handler(Exception)
     async def handle_unexpected(_: Request, exc: Exception) -> JSONResponse:
+        # The one place unhandled errors are logged (with the request context): don't also
+        # log-and-reraise lower down, or one bug becomes several log events.
         logger.exception("Unhandled error", exc_info=exc)
+        # This handler runs in Starlette's ServerErrorMiddleware, outside our
+        # RequestContextMiddleware, so the header has to be added here. It's the response
+        # where the id matters most: the user can quote it to support.
+        request_id = get_log_context().get("request_id")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"error": {"code": "internal_error", "message": "Internal server error"}},
+            headers={REQUEST_ID_HEADER: request_id} if request_id else None,
         )

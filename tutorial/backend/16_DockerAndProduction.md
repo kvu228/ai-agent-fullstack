@@ -280,7 +280,7 @@ make down   # docker compose --profile app down
 - [ ] Kết nối DB: `replicas × workers × (pool_size + max_overflow + pool checkpointer) < max_connections` của RDS (bài 04). Cân nhắc RDS Proxy.
 - [ ] Thay `BackgroundTasks` bằng **hàng đợi thật** (SQS + worker, Celery, arq…): hiện ingestion chạy trong process API, mất khi container restart giữa chừng (document kẹt ở `processing`).
 - [ ] Load balancer: health check → `/api/v1/health/ready`; idle timeout > 15 s và không buffer cho SSE (bài 13).
-- [ ] Observability: log JSON có request id, metrics (latency, lỗi 5xx), tracing LLM (LangSmith…), cảnh báo khi document `failed` tăng.
+- [ ] Observability: log JSON có request id (đã có: `LOG_FORMAT=json`, xem [platform/05](../platform/05_Observability.md)), metrics (latency, lỗi 5xx), tracing LLM (LangSmith…), cảnh báo khi document `failed` tăng.
 - [ ] Image scan (Trivy, ECR scanning), cập nhật base image định kỳ.
 
 ## ⚠️ Lỗi thường gặp

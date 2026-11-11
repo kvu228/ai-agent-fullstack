@@ -74,13 +74,17 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def handle_unexpected(_: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled error", exc_info=exc)
+        request_id = get_log_context().get("request_id")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"error": {"code": "internal_error", "message": "Internal server error"}},
+            headers={REQUEST_ID_HEADER: request_id} if request_id else None,
         )
 ```
 
 Lỗi **không** cố ý (bug, DB sập giữa chừng): log đầy đủ stack trace phía server, client chỉ nhận thông báo chung. Stack trace có thể chứa đường dẫn file, câu SQL, đôi khi cả secret.
+
+Client nhận lại `X-Request-ID` để báo cho support. Header phải được gắn ở đây, vì handler này chạy bên ngoài middleware gắn request id. `AppError` (4xx) thì **không** được log: đó là lỗi của client, và status đã có trong dòng log của request. Xem [platform/05](../platform/05_Observability.md).
 
 ### Ngoại lệ: lỗi validate của FastAPI
 

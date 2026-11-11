@@ -46,6 +46,7 @@ class AuthService:
             # Rely on the UNIQUE constraint, not a "SELECT then INSERT" (that races).
             await self._session.rollback()
             raise ConflictError("An account with this email already exists") from None
+        logger.info("User registered", extra={"user_id": str(user.id)})
         return user
 
     async def authenticate(self, email: str, password: str) -> User:
@@ -54,8 +55,23 @@ class AuthService:
         hashed = user.hashed_password if user else DUMMY_PASSWORD_HASH
         password_ok = verify_password(password, hashed)
         if user is None or not password_ok or not user.is_active:
-            # Same message for every case: don't reveal which emails exist.
+            # The client gets the same message for every case (don't reveal which emails
+            # exist); our logs may say why. Never the email: it's PII, and people sometimes
+            # type their password into the email field.
+            if user is None:
+                reason = "unknown_email"
+            elif not password_ok:
+                reason = "wrong_password"
+            else:
+                reason = "inactive_user"
+            # INFO, not WARNING: one failed login is normal. Brute force shows up as a
+            # *rate* of these, which is a job for a metric + alarm, not for each log line.
+            logger.info(
+                "Login failed",
+                extra={"reason": reason, "user_id": str(user.id) if user else None},
+            )
             raise AuthenticationError("Incorrect email or password")
+        logger.info("Login succeeded", extra={"user_id": str(user.id)})
         return user
 
     async def issue_tokens(self, user: User) -> TokenPair:
@@ -85,7 +101,12 @@ class AuthService:
             raise AuthenticationError("Invalid refresh token")
 
         if record.revoked_at is not None:
-            logger.warning("Refresh token reuse detected for user %s", record.user_id)
+            # WARNING: a probable stolen token. We recover on our own (all sessions revoked),
+            # so it's not an ERROR, but someone should be able to find and review these.
+            logger.warning(
+                "Refresh token reuse detected, revoking all sessions",
+                extra={"user_id": str(record.user_id)},
+            )
             await self._revoke_all(record.user_id)
             raise AuthenticationError("Refresh token reuse detected; please log in again")
 

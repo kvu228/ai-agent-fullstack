@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     app_name: str = "Document Assistant API"
     environment: Literal["development", "staging", "production", "test"] = "development"
     log_level: str = "INFO"
+    # "json" in production (one JSON object per line, for CloudWatch); "text" for humans.
+    log_format: Literal["text", "json"] = "text"
     api_v1_prefix: str = "/api/v1"
     # Origins allowed by CORS *and* by the CSRF origin check (see app/api/deps.py).
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])

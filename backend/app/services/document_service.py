@@ -68,6 +68,15 @@ class DocumentService:
         await self._storage.upload(document.s3_key, data, content_type)
         self._session.add(document)
         await self._session.commit()
+        # No filename: names often contain people's names or other personal data.
+        logger.info(
+            "Document uploaded",
+            extra={
+                "document_id": str(document.id),
+                "content_type": content_type,
+                "size_bytes": len(data),
+            },
+        )
         return document
 
     async def list(self, owner: User) -> list[Document]:
@@ -99,3 +108,4 @@ class DocumentService:
         await self._storage.delete(document.s3_key)
         await self._session.delete(document)
         await self._session.commit()
+        logger.info("Document deleted", extra={"document_id": str(document_id)})

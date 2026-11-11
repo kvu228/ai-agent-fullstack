@@ -15,9 +15,10 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.agents import build_agent_graph, get_chat_model, get_embeddings, get_tools
 from app.api.v1.router import api_router
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
+from app.core.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
 from app.core.tracing import configure_tracing
 from app.db.session import create_engine, create_session_factory
 from app.ingestion.pipeline import IngestionPipeline
@@ -29,6 +30,9 @@ from app.vectorstore.chroma import DocumentVectorStore, create_chroma_client
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown hook: build expensive, shared objects exactly once."""
     settings = get_settings()
+    # Again: `fastapi run` imports this module (running create_app) BEFORE uvicorn applies
+    # its own logging config, which puts uvicorn's handlers back. Startup comes after both.
+    _setup_logging(settings)
     # Here and not in create_app(): the lifespan doesn't run in tests, so tests never trace.
     configure_tracing(settings)
 
@@ -77,10 +81,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.dispose()
 
 
+def _setup_logging(settings: Settings) -> None:
+    setup_logging(
+        settings.log_level, settings.log_format, static_fields={"env": settings.environment}
+    )
+
+
 def create_app() -> FastAPI:
     """App factory: makes it easy to build isolated apps in tests."""
     settings = get_settings()
-    setup_logging(settings.log_level)
+    _setup_logging(settings)
 
     app = FastAPI(
         title=settings.app_name,
@@ -90,13 +100,6 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
 
-    # TODO(advanced): add a RequestContextMiddleware (pure ASGI, not BaseHTTPMiddleware,
-    # which has a history of trouble with streaming responses and BackgroundTasks): reuse an
-    # incoming X-Request-ID or make one, store it in a ContextVar + logging.Filter so every
-    # log line carries it, wrap `send` to read the status and echo X-Request-ID back, and log
-    # "METHOD path -> status, headers after X ms, total Y ms". Things worth observing:
-    #   - /chat/stream: headers go out early, total = the whole agent answer (SSE)
-    #   - POST /documents: total includes ingestion (BackgroundTasks run inside the ASGI call)
     # Only needed for clients calling the API directly from another origin. The Next.js
     # frontend proxies /api/* (same origin), so browsers never need CORS for it.
     app.add_middleware(
@@ -105,6 +108,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[REQUEST_ID_HEADER],  # let cross-origin JS read it
+    )
+    # Added last = outermost: it also sees (and logs) requests that CORS answers itself.
+    prefix = settings.api_v1_prefix
+    app.add_middleware(
+        RequestContextMiddleware, quiet_paths={f"{prefix}/health", f"{prefix}/health/ready"}
     )
     register_exception_handlers(app)
     app.include_router(api_router, prefix=settings.api_v1_prefix)

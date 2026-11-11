@@ -89,8 +89,26 @@ Checklist ở backend/16: log JSON có request id, metrics, tracing, cảnh báo
 
 ### 4a. Logging, metrics, tracing
 
-- [ ] Log JSON có cấu trúc (thay `basicConfig` trong `app/core/logging.py`), kèm `request_id`, `user_id`, `conversation_id`
-- [ ] Middleware gán `request_id` (nhận từ header `X-Request-ID` nếu có), trả lại trong response, truyền sang worker qua message
+**Logging phần 1** (nền tảng, xong; `tutorial/platform/05_Observability.md`, ADR 0003):
+
+- [x] Log JSON có cấu trúc (thay `basicConfig` trong `app/core/logging.py`), kèm `request_id`, `user_id`, `conversation_id`
+- [x] Middleware gán `request_id` (nhận từ header `X-Request-ID` nếu có), trả lại trong response
+- [x] Không log secret/PII: redaction theo tên field + JWT/Bearer, test chứng minh token và email không vào log
+- [ ] Truyền `request_id` sang worker qua message (làm cùng §3a)
+
+**Logging phần 2** (level early senior, viết tiếp vào `05_Observability.md`):
+
+- [ ] Log tóm tắt **một dòng cho mỗi lượt chat**: model, token in/out, số tool call, tool lỗi, `stop_reason`, time-to-first-token, tổng thời gian, chi phí ước tính. Không log nội dung (prompt, câu trả lời, chunk)
+- [ ] Nối log với LangSmith: ghi `langsmith_run_id` vào dòng log trên, gắn `request_id` vào metadata của run (cùng mục "Kết nối với LangSmith" bên dưới)
+- [ ] Audit log tách khỏi app log: bảng append-only `audit_events` (ai, lúc nào, hành động, đối tượng, kết quả) cho đăng nhập thất bại, refresh token bị dùng lại, xoá tài liệu, và quyết định duyệt/huỷ của HITL (§5). Vì sao không dùng `logger.info` cho việc này (retention, không sửa được, truy vấn được)
+- [ ] Chi phí và nhiễu: đo dung lượng log mỗi ngày, retention CloudWatch, sampling log thành công (giữ 100% WARNING trở lên)
+- [ ] Route template (`/documents/{document_id}`) trong log request (OpenTelemetry `http.route`) để gom nhóm theo endpoint
+- [ ] ADR: stdlib `logging` hay structlog/loguru; `dictConfig` hay cấu hình bằng code
+- [ ] Frontend hiển thị "Mã lỗi: …" từ header `X-Request-ID` khi API trả 5xx (bài tập 4 ở platform/05)
+- [ ] Bài tập sự cố: từ một `X-Request-ID` user gửi, dùng Logs Insights tìm request, conversation, tool lỗi, rồi mở trace LangSmith tương ứng
+
+**Metrics và tracing**:
+
 - [ ] OpenTelemetry: trace xuyên qua FastAPI → SQLAlchemy → S3 → Chroma → LLM call → worker
 - [ ] Metrics (Prometheus):
   - [ ] HTTP: request rate, tỉ lệ lỗi 5xx, latency p50/p95/p99 theo endpoint
@@ -109,7 +127,7 @@ Checklist ở backend/16: log JSON có request id, metrics, tracing, cảnh báo
 - [ ] Sửa một điểm nghẽn, đo lại và ghi kết quả trước/sau
 - [ ] Kiểm tra công thức kết nối DB ở backend/16: `replicas × workers × (pool_size + max_overflow + pool checkpointer) < max_connections`
 
-- [ ] Tutorial: `tutorial/platform/05_Observability.md`, `tutorial/platform/06_LoadTesting.md`
+- [ ] Tutorial: `tutorial/platform/05_Observability.md` (phần 1 logging đã có; thêm phần 2, metrics, tracing), `tutorial/platform/06_LoadTesting.md`
 
 **Xong khi**: có dashboard và SLO; có một báo cáo load test ghi rõ giới hạn hiện tại, điểm nghẽn và kết quả sau khi sửa.
 

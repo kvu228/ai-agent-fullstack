@@ -123,7 +123,8 @@ class ChatService:
                     for event in _events_from_update(payload):
                         yield event
         except Exception:
-            # Headers (200 OK) are already sent, so we report errors in-band.
+            # Headers (200 OK) are already sent, so we report errors in-band. Handled here,
+            # so logged here; conversation_id/user_id/request_id come from the log context.
             logger.exception("Agent stream failed")
             yield StreamEvent(type="error", content="The assistant failed to answer.")
             return
