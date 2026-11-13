@@ -21,7 +21,7 @@ dependencies = [
     "pydantic-settings>=2.16.0",
     "pyjwt>=2.15.1",
     "pypdf>=6.20.1",
-    "sqlalchemy[asyncio]>=2.1.4",
+    "sqlalchemy[asyncio]>=2.1.8",
 ]
 
 [dependency-groups]
